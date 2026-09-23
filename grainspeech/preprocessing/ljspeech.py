@@ -94,8 +94,12 @@ def install_textgrids(source: str | Path, preprocessed_dir: str | Path) -> int:
 
 
 class LJSpeechPreprocessor:
-    def __init__(self, config: dict, device: torch.device, seed: int = 1234):
+    def __init__(
+        self, config: dict, device: torch.device, seed: int = 1234,
+        speaker: str = SPEAKER,
+    ):
         self.config = config
+        self.speaker = speaker
         self.in_dir = Path(config["path"]["raw_path"])
         self.out_dir = Path(config["path"]["preprocessed_path"])
         self.val_size = config["preprocessing"]["val_size"]
@@ -126,11 +130,11 @@ class LJSpeechPreprocessor:
         for directory in ("mel", "pitch", "energy", "duration"):
             (self.out_dir / directory).mkdir(parents=True, exist_ok=True)
 
-        wav_files = sorted((self.in_dir / SPEAKER).glob("*.wav"))
+        wav_files = sorted((self.in_dir / self.speaker).glob("*.wav"))
         if limit is not None:
             wav_files = wav_files[:limit]
         if not wav_files:
-            raise FileNotFoundError(f"No prepared wav files found under {self.in_dir / SPEAKER}")
+            raise FileNotFoundError(f"No prepared wav files found under {self.in_dir / self.speaker}")
 
         metadata: list[str] = []
         basenames: list[str] = []
@@ -167,7 +171,7 @@ class LJSpeechPreprocessor:
         )
 
         (self.out_dir / "speakers.json").write_text(
-            json.dumps({SPEAKER: 0}), encoding="utf-8"
+            json.dumps({self.speaker: 0}), encoding="utf-8"
         )
         stats = {
             "pitch": [pitch_min, pitch_max, pitch_mean, pitch_std],
@@ -186,7 +190,7 @@ class LJSpeechPreprocessor:
     def process_utterance(
         self, basename: str
     ) -> tuple[str, np.ndarray, np.ndarray, int] | None:
-        textgrid_path = self.out_dir / "TextGrid" / SPEAKER / f"{basename}.TextGrid"
+        textgrid_path = self.out_dir / "TextGrid" / self.speaker / f"{basename}.TextGrid"
         if not textgrid_path.is_file():
             return None
         textgrid = tgt.io.read_textgrid(textgrid_path)
@@ -196,12 +200,12 @@ class LJSpeechPreprocessor:
         if start >= end:
             return None
 
-        wav_path = self.in_dir / SPEAKER / f"{basename}.wav"
+        wav_path = self.in_dir / self.speaker / f"{basename}.wav"
         waveform, _ = librosa.load(wav_path, sr=self.sample_rate)
         waveform = waveform[
             int(self.sample_rate * start) : int(self.sample_rate * end)
         ].astype(np.float32)
-        raw_text = (self.in_dir / SPEAKER / f"{basename}.lab").read_text(
+        raw_text = (self.in_dir / self.speaker / f"{basename}.lab").read_text(
             encoding="utf-8"
         ).strip()
 
@@ -238,11 +242,11 @@ class LJSpeechPreprocessor:
         if self.energy_phoneme_averaging:
             energy = self._phoneme_average(energy, durations)
 
-        np.save(self.out_dir / "duration" / f"{SPEAKER}-duration-{basename}.npy", durations)
-        np.save(self.out_dir / "pitch" / f"{SPEAKER}-pitch-{basename}.npy", pitch)
-        np.save(self.out_dir / "energy" / f"{SPEAKER}-energy-{basename}.npy", energy)
-        np.save(self.out_dir / "mel" / f"{SPEAKER}-mel-{basename}.npy", mel.T)
-        row = "|".join([basename, SPEAKER, "{" + " ".join(phones) + "}", raw_text])
+        np.save(self.out_dir / "duration" / f"{self.speaker}-duration-{basename}.npy", durations)
+        np.save(self.out_dir / "pitch" / f"{self.speaker}-pitch-{basename}.npy", pitch)
+        np.save(self.out_dir / "energy" / f"{self.speaker}-energy-{basename}.npy", energy)
+        np.save(self.out_dir / "mel" / f"{self.speaker}-mel-{basename}.npy", mel.T)
+        row = "|".join([basename, self.speaker, "{" + " ".join(phones) + "}", raw_text])
         return row, self._remove_outlier(pitch), self._remove_outlier(energy), frame_total
 
     def _get_alignment(self, tier) -> tuple[list[str], list[int], float, float]:
@@ -294,7 +298,7 @@ class LJSpeechPreprocessor:
     ) -> tuple[float, float]:
         minimum, maximum = np.inf, -np.inf
         for basename in basenames:
-            path = self.out_dir / name / f"{SPEAKER}-{name}-{basename}.npy"
+            path = self.out_dir / name / f"{self.speaker}-{name}-{basename}.npy"
             values = (np.load(path) - mean) / std
             np.save(path, values)
             minimum = min(minimum, float(np.min(values)))

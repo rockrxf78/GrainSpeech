@@ -15,13 +15,13 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-import hifigan
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
 
 from layers.networks import PhonemeEncoder, MelDecoder, Phoneme2Mel
+from text.vocabulary import vocabulary_from_config
 from lightning import LightningModule
 from torch.optim import AdamW
 from utils.tools import write_to_file
@@ -29,6 +29,8 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
 
 
 def get_hifigan(checkpoint="hifigan/LJ_V2/generator_v2", infer_device=None, verbose=False):
+    import hifigan
+
     # get the main path
     main_path = os.path.dirname(os.path.abspath(checkpoint))
     json_config = os.path.join(main_path, "config.json")
@@ -291,7 +293,7 @@ class GradientVarianceLoss(nn.Module):
         mask = mask.to(device=pred.device, dtype=pred.dtype)
 
         losses = []
-        if self.include_time:
+        if self.include_time and time > 1:
             pred_dt = pred[:, :, 1:, :] - pred[:, :, :-1, :]
             target_dt = target[:, :, 1:, :] - target[:, :, :-1, :]
             mask_dt = mask[:, :, 1:, :] * mask[:, :, :-1, :]
@@ -304,7 +306,7 @@ class GradientVarianceLoss(nn.Module):
                 self._masked_l1(pred_var_t, target_var_t.detach(), mask_dt)
             )
 
-        if self.include_freq:
+        if self.include_freq and freq > 1:
             pred_df = pred[:, :, :, 1:] - pred[:, :, :, :-1]
             target_df = target[:, :, :, 1:] - target[:, :, :, :-1]
             mask_df = mask[:, :, :, 1:] * mask[:, :, :, :-1]
@@ -345,20 +347,25 @@ class GrainSpeech(LightningModule):
                  gvar_weight=0.5,
                  pitch_weight=2.0,
                  energy_weight=2.0,
-                 duration_weight=1.0):
+                 duration_weight=1.0,
+                 feature_stats=None):
         super().__init__()
 
         self.save_hyperparameters()
 
         
-        with open(os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")) as f:
-            stats = json.load(f)
-            pitch_stats = stats["pitch"][:2]
-            energy_stats = stats["energy"][:2]
+        if feature_stats is None:
+            with open(os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")) as f:
+                feature_stats = json.load(f)
+        self.hparams["feature_stats"] = feature_stats
+        pitch_stats = feature_stats["pitch"][:2]
+        energy_stats = feature_stats["energy"][:2]
+        vocabulary = vocabulary_from_config(preprocess_config)
 
         phoneme_encoder = PhonemeEncoder(
             pitch_stats=pitch_stats,
             energy_stats=energy_stats,
+            vocab_size=len(vocabulary) if vocabulary is not None else None,
         )
 
         mel_decoder = MelDecoder()
@@ -366,8 +373,11 @@ class GrainSpeech(LightningModule):
         self.phoneme2mel = Phoneme2Mel(encoder=phoneme_encoder,
                                        decoder=mel_decoder)
 
-        self.hifigan = get_hifigan(checkpoint=hifigan_checkpoint,
-                                   infer_device=infer_device, verbose=verbose)
+        self.hifigan = (
+            get_hifigan(checkpoint=hifigan_checkpoint,
+                        infer_device=infer_device, verbose=verbose)
+            if hifigan_checkpoint is not None else None
+        )
 
         self.ssim_loss_fn = MaskedSSIMLoss(
             kernel_size=(ssim_kernel_time, ssim_kernel_freq),
@@ -398,6 +408,10 @@ class GrainSpeech(LightningModule):
 
 
     def predict_step(self, batch, batch_idx=0,  dataloader_idx=0):
+        if self.hifigan is None:
+            raise RuntimeError(
+                "Waveform prediction requires a vocoder; use phoneme2mel for acoustic-only inference"
+            )
         mel, mel_len, duration = self.phoneme2mel(batch, train=False)
         mel_hifigan = mel.transpose(1, 2)  # (B, n_mels, T) for HiFiGAN
         wav = self.hifigan(mel_hifigan).squeeze(1)
@@ -503,7 +517,7 @@ class GrainSpeech(LightningModule):
                   "pitch_loss": pitch_loss,
                   "energy_loss": energy_loss, 
                   "duration_loss": duration_loss}
-        self.training_step_outputs.append(losses)
+        self.training_step_outputs.append({name: value.detach() for name, value in losses.items()})
         
         return loss
 
@@ -569,7 +583,7 @@ class GrainSpeech(LightningModule):
             batch_size=y["mel"].shape[0],
         )
 
-        if batch_idx==0 and self.current_epoch>=1 :
+        if self.hifigan is not None and batch_idx==0 and self.current_epoch>=1 :
             wavs, lengths, _ = self.forward(x)
             wavs = wavs.to(torch.float).cpu().numpy()[:5]
             write_to_file(wavs, self.hparams.preprocess_config, lengths=lengths.cpu().numpy()[:5], \

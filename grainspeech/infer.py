@@ -6,19 +6,17 @@ from pathlib import Path
 import numpy as np
 import torch
 import yaml
-from g2p_en import G2p
 from scipy.io import wavfile
 
 from model_l1_ssim_gvar import GrainSpeech
 from text import text_to_sequence
-from text.symbols import symbols
+from text.frontend import parse_phonemes, text_to_arpabet
 
 
 DEFAULT_CHECKPOINT = "checkpoints/grainspeech_l1_ssim_gvar.ckpt"
 DEFAULT_CONFIG = "configs/LJSpeech/preprocess.yaml"
 DEFAULT_STATS = "configs/LJSpeech/stats.json"
 DEFAULT_VOCODER = "hifigan/LJ_V2/generator_v2"
-PAUSE_MARKS = {",", ";", ":", ".", "!", "?"}
 
 
 def parse_args():
@@ -53,33 +51,6 @@ def resolve_device(requested):
     if requested == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("--device cuda was requested, but CUDA is unavailable")
     return requested
-
-
-def text_to_arpabet(text):
-    supported = {symbol[1:] for symbol in symbols if symbol.startswith("@")}
-    phones = []
-    for token in G2p()(text):
-        if token in supported:
-            phones.append(token)
-        elif token in PAUSE_MARKS and phones and phones[-1] != "sp":
-            phones.append("sp")
-
-    while phones and phones[-1] == "sp":
-        phones.pop()
-    if not phones:
-        raise ValueError("The text frontend produced no supported ARPAbet phonemes")
-    return phones
-
-
-def parse_phonemes(value):
-    phones = value.strip().removeprefix("{").removesuffix("}").split()
-    supported = {symbol[1:] for symbol in symbols if symbol.startswith("@")}
-    unsupported = sorted(set(phones) - supported)
-    if unsupported:
-        raise ValueError(f"Unsupported phonemes: {', '.join(unsupported)}")
-    if not phones:
-        raise ValueError("No phonemes were provided")
-    return phones
 
 
 def main():

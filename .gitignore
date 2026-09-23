@@ -38,6 +38,7 @@ lightning_logs/
 *.wav
 *.flac
 *.npy
+hifigan/LJ_V2/hifigan_info.json
 
 # Small, reproducible README examples (not training data).
 !assets/examples/*.wav

@@ -1,0 +1,6 @@
+# Optional dependencies for the GrainSpeech and HiFi-GAN TFLite exporters.
+# Keep these separate from requirements.txt because TensorFlow is not needed
+# for normal PyTorch training or desktop inference.
+-r requirements.txt
+tensorflow>=2.16
+ethos-u-vela>=4.0

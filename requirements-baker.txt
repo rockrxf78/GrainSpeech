@@ -1,0 +1,3 @@
+# Optional Baker Parquet reader; install requirements.txt first.
+pyarrow>=17.0.0
+transformers==4.57.6

@@ -13,6 +13,7 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader
 
 from text import text_to_sequence
+from text.vocabulary import vocabulary_from_config
 from utils.tools import pad_1D, pad_2D
 from lightning import LightningDataModule
 from utils.tools import get_mask_from_lengths
@@ -91,20 +92,18 @@ class LJSpeechDataModule(LightningDataModule):
         self.prepare_data()
 
     def train_dataloader(self):
-        self.train_dataloader = DataLoader(self.train_dataset,
+        return DataLoader(self.train_dataset,
                                            shuffle=True,
                                            batch_size=self.batch_size,
                                            collate_fn=self.collate_fn,
                                            num_workers=self.num_workers)
-        return self.train_dataloader
 
     def test_dataloader(self):
-        self.test_dataloader = DataLoader(self.test_dataset,
+        return DataLoader(self.test_dataset,
                                           shuffle=False,
                                           batch_size=self.batch_size,
                                           collate_fn=self.collate_fn,
                                           num_workers=self.num_workers)
-        return self.test_dataloader
     
     def val_dataloader(self):
         return self.test_dataloader()
@@ -115,6 +114,8 @@ class LJSpeechDataset(Dataset):
         self.dataset_name = preprocess_config["dataset"]
         self.preprocessed_path = preprocess_config["path"]["preprocessed_path"]
         self.cleaners = preprocess_config["preprocessing"]["text"]["text_cleaners"]
+        self.vocabulary = vocabulary_from_config(preprocess_config)
+        self.n_mels = preprocess_config["preprocessing"]["mel"]["n_mel_channels"]
         #self.batch_size = batch_size
         self.max_text_length = preprocess_config["preprocessing"]["text"]["max_length"]
         self.basename, self.speaker, self.text, self.raw_text = self.process_meta(filename)
@@ -131,7 +132,10 @@ class LJSpeechDataset(Dataset):
         speaker = self.speaker[idx]
         #speaker_id = self.speaker_map[speaker]
         raw_text = self.raw_text[idx]
-        phoneme = np.array(text_to_sequence(self.text[idx], self.cleaners))
+        phoneme = np.array(
+            self.vocabulary.encode(self.text[idx]) if self.vocabulary is not None
+            else text_to_sequence(self.text[idx], self.cleaners), dtype=np.int64
+        )
         mel_path = os.path.join(
             self.preprocessed_path,
             "mel",
@@ -156,6 +160,18 @@ class LJSpeechDataset(Dataset):
             "{}-duration-{}.npy".format(speaker, basename),
         )
         duration = np.load(duration_path)
+        if self.vocabulary is not None:
+            if any(value.ndim != 1 or len(value) != len(phoneme)
+                   for value in (pitch, energy, duration)):
+                raise ValueError(f"{basename}: phones/pitch/energy/duration lengths differ")
+            if mel.ndim != 2 or mel.shape[1] != self.n_mels or not len(mel):
+                raise ValueError(f"{basename}: expected nonempty [frames, {self.n_mels}] mel")
+            if any(not np.isfinite(value).all() for value in (mel, pitch, energy, duration)):
+                raise ValueError(f"{basename}: features contain non-finite values")
+            if (duration < 0).any() or not np.equal(duration, np.floor(duration)).all():
+                raise ValueError(f"{basename}: durations must be nonnegative integers")
+            if duration.sum() != len(mel):
+                raise ValueError(f"{basename}: duration sum does not match mel frame count")
 
         x = {"phoneme": phoneme,
              "text": raw_text,
